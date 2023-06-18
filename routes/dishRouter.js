@@ -12,6 +12,7 @@ dishRouter.route('/')
     // login first to see all dishes
     .get(authenticate.verifyUser, (req, res, next) => {
         Dishes.find({})
+            .populate('comments.author')
             .then((dishes) => {
                 res.statusCode = 200;
                 res.setHeader('Content-Type', 'application/json');
@@ -49,6 +50,7 @@ dishRouter.route('/:dishId')
     // login first to get specific dish
     .get(authenticate.verifyUser, (req, res, next) => {
         Dishes.findById(req.params.dishId)
+            .populate('comments.author')
             .then((dish) => {
                 res.statusCode = 200;
                 res.setHeader('Content-Type', 'application/json');
@@ -85,6 +87,7 @@ dishRouter.route('/:dishId')
 dishRouter.route('/:dishId/comments')
     .get(authenticate.verifyUser, (req, res, next) => {
         Dishes.findById(req.params.dishId)
+            .populate('comments.author')
             .then((dish) => {
                 if (dish != null) {
                     res.statusCode = 200;
@@ -102,16 +105,18 @@ dishRouter.route('/:dishId/comments')
         Dishes.findById(req.params.dishId)
             .then((dish) => {
                 if (dish != null) {
-                    // add user id before save
-                    const userId = req.user._id;
-                    req.body.author = userId;
-
+                    req.body.author = req.user._id;
                     dish.comments.push(req.body);
                     dish.save()
                         .then((dish) => {
-                            res.statusCode = 200;
-                            res.setHeader('Content-Type', 'application/json');
-                            res.json(dish);
+                            Dishes.findById(dish._id)
+                                .populate('comments.author')
+                                .then((dish) => {
+                                    res.statusCode = 200;
+                                    res.setHeader('Content-Type', 'application/json');
+                                    res.json(dish);
+                                })
+
                         }, (err) => next(err))
                 } else {
                     err = new Error('Dish ' + req.params.dishId + ' not found');
@@ -152,10 +157,21 @@ dishRouter.route('/:dishId/comments/:commentId')
     // login first to get specific dish comment
     .get(authenticate.verifyUser, (req, res, next) => {
         Dishes.findById(req.params.dishId)
+            .populate('comments.author')
             .then((dish) => {
-                res.statusCode = 200;
-                res.setHeader('Content-Type', 'application/json');
-                res.json(dish.comments.id(req.params.commentId));
+                if (dish != null && dish.comments.id(req.params.commentId) != null) {
+                    res.statusCode = 200;
+                    res.setHeader('Content-Type', 'application/json');
+                    res.json(dish.comments.id(req.params.commentId));
+                } else if (dish == null) {
+                    err = new Error('Dish ' + req.params.dishId + ' not found');
+                    err.status = 404;
+                    return next(err);
+                } else {
+                    err = new Error('Comment ' + req.params.commentId + ' not found');
+                    err.status = 404;
+                    return next(err);
+                }
             }, (err) => next(err))
             .catch((err) => next(err))
     })
@@ -165,68 +181,80 @@ dishRouter.route('/:dishId/comments/:commentId')
     })
     // only author can put and delete their comment
     .put(authenticate.verifyUser, (req, res, next) => {
-        const userId = req.user._id;
-
-        // find author id from db
         Dishes.findById(req.params.dishId)
             .then((dish) => {
-                const authorId = dish.comments.id(req.params.commentId).author;
-
-                // check if id of logged in user equals to author id
-                if (userId.equals(authorId)) {
-
-                    // findOneAndUpdate can only update or add the existing, so we cannot use $set: req.body
-                    Dishes.findOneAndUpdate({ "_id": req.params.dishId, "comments._id": req.params.commentId },
-                        {
-                            $set: {
-                                "comments.$.rating": req.body.rating,
-                                "comments.$.comment": req.body.comment
-                            }
-                        }, { new: true })
-                        .then((dish) => {
-                            res.statusCode = 200;
-                            res.setHeader('Content-Type', 'application/json');
-                            res.json(dish.comments.id(req.params.commentId));
-                        }, (err) => next(err))
-                        .catch((err) => next(err));
+                // check logged in user is author or not
+                if (!req.user._id.equals(dish.comments.id(req.params.commentId).author)) {
+                    err = new Error('You are not authorized to edit this comment!');
+                    err.status = 404;
+                    return next(err);
                 } else {
-                    next(err);
+                    if (dish != null && dish.comments.id(req.params.commentId) != null) {
+                        if (req.body.rating) {
+                            dish.comments.id(req.params.commentId).rating = req.body.rating;
+                        }
+                        if (req.body.comment) {
+                            dish.comments.id(req.params.commentId).comment = req.body.comment;
+                        }
+                        dish.save()
+                            .then((dish) => {
+                                Dishes.findById(dish._id)
+                                    .populate('comments.author')
+                                    .then((dish) => {
+                                        res.statusCode = 200;
+                                        res.setHeader('Content-Type', 'application/json');
+                                        res.json(dish);
+                                    })
+                            }, (err) => next(err));
+                    } else if (dish == null) {
+                        err = new Error('Dish ' + req.params.dishId + ' not found');
+                        err.status = 404;
+                        return next(err);
+                    } else {
+                        err = new Error('Comment ' + req.params.commentId + ' not found');
+                        err.status = 404;
+                        return next(err);
+                    }
                 }
             }, (err) => next(err))
-            .catch((err) => next(err))
+            .catch((err) => next(err));
+
     })
     .delete(authenticate.verifyUser, (req, res, next) => {
-        const userId = req.user._id;
-
-        // find author id from db
         Dishes.findById(req.params.dishId)
             .then((dish) => {
-                const authorId = dish.comments.id(req.params.commentId).author;
-
-                // check if id of logged in user equals to author id
-                if (userId.equals(authorId)) {
-                    // delete specific comment
-                    Dishes.findByIdAndUpdate({ "_id": req.params.dishId, "comments._id": req.params.commentId },
-                        {
-                            $pull: {
-                                'comments': {
-                                    "_id": req.params.commentId
-                                }
-                            }
-                        }, { new: true })
-                        .then((dish) => {
-                            res.statusCode = 200;
-                            res.setHeader('Content-Type', 'application/json');
-                            res.json("Deleted comment id: " + req.params.commentId);
-                        }, (err) => next(err))
-                        .catch((err) => next(err))
+                // check logged in user is author or not
+                if (!req.user._id.equals(dish.comments.id(req.params.commentId).author)) {
+                    err = new Error('You are not authorized to delete this comment!');
+                    err.status = 404;
+                    return next(err);
                 } else {
-                    err = new Error('You are not authorized to delete this comment: ' + req.params.commentId);
-                    err.statusCode = 403;
-                    next(err);
+                    if (dish != null && dish.comments.id(req.params.commentId) != null) {
+
+                        dish.comments.id(req.params.commentId).deleteOne();
+                        dish.save()
+                            .then((dish) => {
+                                Dishes.findById(dish._id)
+                                    .populate('comments.author')
+                                    .then((dish) => {
+                                        res.statusCode = 200;
+                                        res.setHeader('Content-Type', 'application/json');
+                                        res.json(dish);
+                                    })
+                            }, (err) => next(err));
+                    } else if (dish == null) {
+                        err = new Error('Dish ' + req.params.dishId + ' not found');
+                        err.status = 404;
+                        return next(err);
+                    } else {
+                        err = new Error('Comment ' + req.params.commentId + ' not found');
+                        err.status = 404;
+                        return next(err);
+                    }
                 }
             }, (err) => next(err))
-            .catch((err) => next(err))
-    })
+            .catch((err) => next(err));
+    });
+
 
 module.exports = dishRouter;
