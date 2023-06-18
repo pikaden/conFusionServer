@@ -20,6 +20,7 @@ var opts = {};
 opts.jwtFromRequest = ExtractJwt.fromAuthHeaderAsBearerToken();
 opts.secretOrKey = config.secretKey;
 
+// JWT Strategy (this return user which can be used in next authentication)
 exports.jwtPassport = passport.use(new JwtStrategy(opts, (jwt_payload, done) => {
     console.log('JWT payload: ', jwt_payload);
     User.findById({ _id: jwt_payload._id })
@@ -35,4 +36,16 @@ exports.jwtPassport = passport.use(new JwtStrategy(opts, (jwt_payload, done) => 
         })
 }))
 
+// verify ordinary user (must login first)
 exports.verifyUser = passport.authenticate('jwt', { session: false });
+
+// verify admin
+exports.verifyAdmin = function (req, err, next) {
+    if (req.user.admin) {
+        return next();
+    } else {
+        var err = new Error('Only administrators are authorized to perform this operation.');
+        err.status = 403;
+        return next(err);
+    }
+};
